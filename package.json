@@ -1,0 +1,101 @@
+{
+  "name": "job-central",
+  "version": "0.5.0",
+  "private": true,
+  "license": "MIT",
+  "author": "Nicolas Cukas",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cukas/job-central"
+  },
+  "type": "module",
+  "main": "dist-electron/main/main.js",
+  "description": "Local-first job search planner, CV studio, and portal tracker.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run build:main && concurrently -k \"tsc -w -p tsconfig.electron.json --preserveWatchOutput\" \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electronmon dist-electron/main/main.js\"",
+    "build:main": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "build": "npm run build:main && vite build",
+    "pack": "npm run build && electron-builder --dir",
+    "ensure:canvas-x64": "node scripts/ensure-canvas-x64.cjs",
+    "dist:mac": "npm run build && npm run ensure:canvas-x64 && electron-builder --mac",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "electronmon": {
+    "patterns": [
+      "dist-electron/**/*"
+    ],
+    "logLevel": "quiet"
+  },
+  "dependencies": {
+    "@tiptap/react": "^3.23.6",
+    "@tiptap/starter-kit": "^3.23.6",
+    "@vitejs/plugin-react": "^5.1.1",
+    "express": "^5.2.1",
+    "fast-xml-parser": "^5.8.0",
+    "lucide-react": "^0.562.0",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^4.10.38",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.6",
+    "electron-builder": "^26.8.1",
+    "electronmon": "^2.0.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.nicolascukas.jobcentral",
+    "productName": "Job Central",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "afterSign": "scripts/notarize.cjs",
+    "afterAllArtifactBuild": "scripts/notarize-dmg.cjs",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-electron
+release
+coverage
+*.log
+.env
+.DS_Store
+cache/
+CLAUDE.md
+.venv/
+.antigravitycli/

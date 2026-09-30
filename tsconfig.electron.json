@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "outDir": "dist-electron",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src/main", "src/shared", "src/pipeline-server"]
+}
