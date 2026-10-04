@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { AiPlan, AiProvider } from "../../shared/types.js";
 import { resolveCliEnv } from "./ai.js";
 
@@ -45,12 +46,32 @@ function modelArgs(provider: AiProvider, plan: AiPlan) {
   return provider.modelFlag && modelId ? [provider.modelFlag, modelId] : [];
 }
 
-function argsFor(provider: AiProvider, plan: AiPlan, includeModel: boolean) {
+// Older Claude Code builds reject unknown flags and would fail every run, so each
+// lockdown flag is only passed when this install's --help lists it.
+let claudeLockdown: Promise<string[]> | undefined;
+function claudeLockdownArgs(command: string, env: NodeJS.ProcessEnv) {
+  claudeLockdown ??= promisify(execFile)(command, ["--help"], { timeout: 8000, env })
+    .then(({ stdout }) => [
+      ...(/--tools\b/.test(stdout) ? ["--tools", ""] : []),
+      ...(/--strict-mcp-config\b/.test(stdout) ? ["--strict-mcp-config"] : []),
+    ])
+    .catch(() => {
+      claudeLockdown = undefined;
+      return [];
+    });
+  return claudeLockdown;
+}
+
+function argsFor(provider: AiProvider, plan: AiPlan, includeModel: boolean, lockdown: string[] = []) {
   const prompt = plan.prompt;
   const selectedModel = includeModel ? modelArgs(provider, plan) : [];
-  if (provider.key === "claude") return [...selectedModel, "-p", prompt];
+  // Prompts carry untrusted CV/web text and already hold all needed context, so
+  // claude gets no tools and no MCP servers.
+  if (provider.key === "claude") return [...selectedModel, ...lockdown, "-p", prompt];
   if (provider.key === "gemini") return ["-p", prompt, ...selectedModel];
-  if (provider.key === "codex") return ["exec", ...selectedModel, prompt];
+  // The sandbox dir is not a git repo; without the flag codex exec refuses to run.
+  // Prompts carry untrusted CV/web text, so codex may never write or reach the network.
+  if (provider.key === "codex") return ["exec", "--skip-git-repo-check", "--sandbox", "read-only", ...selectedModel, prompt];
   if (provider.key === "opencode") return ["run", ...selectedModel, prompt];
   // Give agy its own print-timeout just under our SIGKILL so it returns whatever
   // it has rather than being hard-killed, and wrap the prompt to keep it inline.
@@ -123,19 +144,20 @@ export async function runAiPlanWithProvider(provider: AiProvider, plan: AiPlan, 
   // Augmented PATH (resolved from the login shell) so Homebrew/local CLIs resolve.
   const env = await resolveCliEnv();
   const hasModelFlag = modelArgs(provider, plan).length > 0;
+  const lockdown = provider.key === "claude" ? await claudeLockdownArgs(provider.command, env) : [];
 
   // Serialize runs through a depth-capped queue so the app never hammers the CLI.
   aiQueueDepth += 1;
   const run = aiRunQueue.then(async () => {
     try {
-      return await spawnOnce(provider.command, argsFor(provider, plan, true), env, onChunk);
+      return await spawnOnce(provider.command, argsFor(provider, plan, true, lockdown), env, onChunk);
     } catch (error) {
       // Retry without the explicit model ONLY for an unknown-model error — never
       // for quota/rate-limit/auth/timeout, so we never double the usage there.
       const message = error instanceof Error ? error.message : String(error);
       if (!hasModelFlag || !isUnknownModelError(message)) throw error;
       onChunk?.("\n[retrying without explicit model]\n", "stderr");
-      return await spawnOnce(provider.command, argsFor(provider, plan, false), env, onChunk);
+      return await spawnOnce(provider.command, argsFor(provider, plan, false, lockdown), env, onChunk);
     }
   });
   aiRunQueue = run.catch(() => undefined);

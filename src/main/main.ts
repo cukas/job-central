@@ -42,7 +42,8 @@ import type {
 import { hydrateCvSection, hydrateCvSections, removeCvEntry, replaceCvEntryFrom } from "../shared/cvModel.js";
 import { profileFromCvText } from "../shared/cvImport.js";
 import { normalizeJobUrlKey } from "../shared/jobUrl.js";
-import { detectAiProviders, resolveCliEnv } from "./services/ai.js";
+import { resolveCliEnv } from "./services/ai.js";
+import { engineMissingMessage, ensureActiveProviderDetected, markActive, redetectProviders } from "./services/engineSelection.js";
 import { runAiPlanWithProvider } from "./services/aiRunner.js";
 import { importCareerOps } from "./services/careerOpsImport.js";
 import { cvDocx } from "./services/docx.js";
@@ -404,6 +405,15 @@ app.on("will-quit", () => {
 
 function addEvent(type: EventType, aggregateType: AppEvent["aggregateType"], aggregateId: string, payload: Record<string, unknown>) {
   return store.emit({ type, aggregateType, aggregateId, payload });
+}
+
+// Re-probes a selected-but-undetected engine before AI work, so a flaky probe or a
+// CLI installed after launch never blocks the user's chosen engine.
+function handleAi<A extends unknown[], R>(channel: string, handler: (event: Electron.IpcMainInvokeEvent, ...args: A) => Promise<R>) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    await ensureActiveProviderDetected();
+    return handler(event, ...(args as A));
+  });
 }
 
 function activeProvider(data: Awaited<ReturnType<typeof store.load>>) {
@@ -2018,7 +2028,7 @@ function registerIpc() {
   // engine is detected or the model output isn't usable, so the renderer falls back to
   // the deterministic parser. NEVER writes to the store — the renderer's import-review
   // / undo flow owns persistence.
-  ipcMain.handle("cv:structure-import", async (_event, input: { text: string }): Promise<{ sections: Record<string, string> } | null> => {
+  handleAi("cv:structure-import", async (_event, input: { text: string }): Promise<{ sections: Record<string, string> } | null> => {
     const text = (input?.text ?? "").trim();
     if (!text) return null;
     const data = await store.load();
@@ -2102,7 +2112,7 @@ Return ONLY strict JSON, no prose: {"sections": {"profile": "...", "experience":
 
   // Build (and curate) the experience section from imported Zeugnis text. Result lands
   // as the usual reviewable CV section proposals targeting the master (or given CV).
-  ipcMain.handle("cv:build-experience", async (_event, input: { text: string; mode: "curate" | "trim"; cvId?: string; apply?: boolean }) => {
+  handleAi("cv:build-experience", async (_event, input: { text: string; mode: "curate" | "trim"; cvId?: string; apply?: boolean }) => {
     const docText = (input.text ?? "").trim();
     if (!docText) return store.load();
     let planId = "";
@@ -2182,14 +2192,14 @@ Return ONLY strict JSON: {"sections": {"experience": "replacement text"}, "summa
   // notes, certificate text); agy merges only the REAL facts into the master CV and
   // we also keep the raw text as a source document so every future tailoring can use
   // it. Auto-applies (the user can edit the master CV afterwards). Never invents.
-  ipcMain.handle("cv:ingest-material", async (_event, input: { text: string; instruction?: string }): Promise<{ data: AppData; summary: string }> => {
+  handleAi("cv:ingest-material", async (_event, input: { text: string; instruction?: string }): Promise<{ data: AppData; summary: string }> => {
     const material = (input?.text ?? "").trim().slice(0, 20000); // cap: avoid data bloat / context overflow
     if (!material) return { data: await store.load(), summary: "" };
     // Validate an engine is available BEFORE writing anything, so a missing engine
     // can't leave a stray source document + unrun "ready" plan behind on every retry.
     const pre = await store.load();
     if (!activeProvider(pre)?.detected) {
-      return { data: pre, summary: "No detected AI engine is selected. Choose one in Settings, then retry." };
+      return { data: pre, summary: engineMissingMessage(pre) };
     }
     let planId = "";
     await store.update((draft) => {
@@ -2336,12 +2346,12 @@ Return ONLY strict JSON: {"sections": {"experience": "...", "skills": "..."}, "s
   // project inventory where each item must cite the document + verbatim quote it came
   // from — ungrounded items are dropped by the model, so nothing is fabricated. The
   // experience/projects sections are then rendered deterministically from the inventory.
-  ipcMain.handle("cv:build-from-sources", async (_event, input?: { targetLang?: "en" | "de" }): Promise<{ data: AppData; summary: string }> => {
+  handleAi("cv:build-from-sources", async (_event, input?: { targetLang?: "en" | "de" }): Promise<{ data: AppData; summary: string }> => {
     const pre = await store.load();
     // The user picks the CV's language in the build step (independent of the UI language).
     const targetLang: "en" | "de" = input?.targetLang === "en" || input?.targetLang === "de" ? input.targetLang : pre.settings.language;
     if (!activeProvider(pre)?.detected) {
-      return { data: pre, summary: "No detected AI engine is selected. Set up agy first, then build." };
+      return { data: pre, summary: engineMissingMessage(pre) };
     }
     const docs = (pre.sourceDocuments ?? []).filter((d) => d.text.trim());
     if (!docs.length) {
@@ -2667,7 +2677,7 @@ Return ONLY strict JSON:
   // instantly (deterministic, no AI). Otherwise agy ranks which existing projects fit
   // the role and pre-selects them — it only chooses among the user's real projects,
   // never inventing new ones.
-  ipcMain.handle("cv:tailor-projects", async (_event, input: { targetRole: string }): Promise<{ data: AppData; summary: string }> => {
+  handleAi("cv:tailor-projects", async (_event, input: { targetRole: string }): Promise<{ data: AppData; summary: string }> => {
     const role = (input?.targetRole ?? "").trim();
     const pre = await store.load();
     if (!role) return { data: pre, summary: "Tell me the target role first." };
@@ -2691,7 +2701,7 @@ Return ONLY strict JSON:
     }
 
     if (!activeProvider(pre)?.detected) {
-      return { data: pre, summary: "Set up agy to auto-tailor, or pick projects manually with the toggles." };
+      return { data: pre, summary: `${engineMissingMessage(pre)} Or pick projects manually with the toggles.` };
     }
     const inventory = pre.cvProjects.map((p) => ({
       id: p.id,
@@ -2902,7 +2912,7 @@ Return ONLY strict JSON: {"keep": ["<id>", "<id>"], "summary": "one short line o
     return data;
   });
 
-  ipcMain.handle("cv:propose-master-optimization", async (_event, input: { instructions?: string }) => {
+  handleAi("cv:propose-master-optimization", async (_event, input: { instructions?: string }) => {
     let planId = "";
     const data = await store.update((draft) => {
       const providerKey = draft.settings.activeAiProvider ?? "custom";
@@ -2946,7 +2956,7 @@ Return ONLY strict JSON: {"keep": ["<id>", "<id>"], "summary": "one short line o
     }
   });
 
-  ipcMain.handle("cv:create-variant", async (_event, input: { jobId?: string; title: string; notes: string; reuseExisting?: boolean }) => {
+  handleAi("cv:create-variant", async (_event, input: { jobId?: string; title: string; notes: string; reuseExisting?: boolean }) => {
     let cvId = "";
     let planId = "";
     let reusedExisting = false;
@@ -3217,7 +3227,7 @@ Return ONLY strict JSON: {"keep": ["<id>", "<id>"], "summary": "one short line o
     return data;
   });
 
-  ipcMain.handle("letters:generate", async (_event, input: { jobId: string; cvVersionId?: string; language: "en" | "de"; instructions: string }) => {
+  handleAi("letters:generate", async (_event, input: { jobId: string; cvVersionId?: string; language: "en" | "de"; instructions: string }) => {
     let letterId = "";
     let planId = "";
     // Deep-Inserat: same enrichment as the CV path, so the letter cites the real
@@ -3303,7 +3313,7 @@ Return ONLY strict JSON: {"keep": ["<id>", "<id>"], "summary": "one short line o
 
   // Bilingual: translate a CV ("master" or a cvVersion id) into the other language,
   // producing/refreshing its translation sibling. Translate-on-demand — never auto-runs.
-  ipcMain.handle("cv:translate", async (_event, input: { cvId: string; targetLang: "en" | "de" }): Promise<{ data: AppData; summary: string }> => {
+  handleAi("cv:translate", async (_event, input: { cvId: string; targetLang: "en" | "de" }): Promise<{ data: AppData; summary: string }> => {
     const pre = await store.load();
     const isMaster = input.cvId === "master" || input.cvId === pre.masterCv.id;
     const source: CvDocument | CvVersion | undefined = isMaster ? pre.masterCv : pre.cvVersions.find((c) => c.id === input.cvId);
@@ -3414,7 +3424,7 @@ Return ONLY strict JSON: {"keep": ["<id>", "<id>"], "summary": "one short line o
   });
 
   // Bilingual: translate a cover letter into the other language (translate-on-demand).
-  ipcMain.handle("letter:translate", async (_event, input: { letterId: string; targetLang: "en" | "de" }): Promise<{ data: AppData; summary: string }> => {
+  handleAi("letter:translate", async (_event, input: { letterId: string; targetLang: "en" | "de" }): Promise<{ data: AppData; summary: string }> => {
     const pre = await store.load();
     const source = pre.coverLetters.find((l) => l.id === input.letterId);
     if (!source) return { data: pre, summary: "Letter not found." };
@@ -3496,7 +3506,7 @@ Return ONLY strict JSON: {"keep": ["<id>", "<id>"], "summary": "one short line o
     return data;
   });
 
-  ipcMain.handle("ai:run-plan", async (_event, planId: string) => {
+  handleAi("ai:run-plan", async (_event, planId: string) => {
     const current = await store.load();
     const plan = current.aiPlans.find((item) => item.id === planId);
     if (!plan) throw new Error("AI plan not found");
@@ -3552,7 +3562,7 @@ Return ONLY strict JSON: {"keep": ["<id>", "<id>"], "summary": "one short line o
     }
   });
 
-  ipcMain.handle("ai:chat-job", async (_event, input: { jobId: string; message: string; cvVersionId?: string; letterId?: string }) => {
+  handleAi("ai:chat-job", async (_event, input: { jobId: string; message: string; cvVersionId?: string; letterId?: string }) => {
     const trimmed = input.message.trim();
     if (!trimmed) return store.load();
     let conversationId = "";
@@ -3693,7 +3703,7 @@ ${trimmed}${userLanguageDirective(draft.settings.language)}`,
   // unifies the CV check (a score + critique) and CV propose (reviewable section
   // rewrites). The model returns JSON {reply, score, sections}; sections become the
   // same accept/reject proposals used everywhere else.
-  ipcMain.handle("ai:chat-cv", async (_event, input: { cvId: string; message: string }) => {
+  handleAi("ai:chat-cv", async (_event, input: { cvId: string; message: string }) => {
     const trimmed = input.message.trim();
     if (!trimmed) return store.load();
     let conversationId = "";
@@ -3818,7 +3828,7 @@ Return ONLY strict JSON: {"reply": "...", "score": 0, "sections": {"experience":
     return data;
   });
 
-  ipcMain.handle("ai:career-advisor", async (_event, input: { message: string }) => {
+  handleAi("ai:career-advisor", async (_event, input: { message: string }) => {
     const trimmed = (typeof input?.message === "string" ? input.message : "").trim().slice(0, 6000);
     if (!trimmed) return store.load();
     const advisorCvId = "__career_advisor__";
@@ -4500,7 +4510,7 @@ Return ONLY strict JSON: {"reply": "...", "score": 0, "sections": {"experience":
   // Turn the visible text of a posting (scraped in the in-app browser from the
   // user's own session) into a structured job via the active AI CLI. Returns the
   // parsed fields for the user to confirm before it is added to the pipeline.
-  ipcMain.handle("web:extract-job", async (_event, input: { url: string; text: string }): Promise<JobExtraction> => {
+  handleAi("web:extract-job", async (_event, input: { url: string; text: string }): Promise<JobExtraction> => {
     const data = await store.load();
     const provider = activeProvider(data);
     if (!provider?.detected) throw new Error("No AI CLI is detected. Run detection in Settings, then try again.");
@@ -4571,7 +4581,7 @@ If this page is NOT a single job posting (e.g. a search results list or an error
   });
 
   // Step 2: ask the active AI engine to map profile + CV onto those fields.
-  ipcMain.handle("ai:autofill-map", async (_event, input: { fields: AutofillField[]; pageText: string }): Promise<AutofillMapResult> => {
+  handleAi("ai:autofill-map", async (_event, input: { fields: AutofillField[]; pageText: string }): Promise<AutofillMapResult> => {
     const fields = (input.fields ?? []).filter((field) => !field.isFile);
     if (!fields.length) return { values: {}, review: [] };
     const data = await store.load();
@@ -4623,7 +4633,7 @@ If this page is NOT a single job posting (e.g. a search results list or an error
   // hidden Chromium window (real browser, no cloud service), scrape the listings,
   // then have the AI turn that REAL content into job cards with real URLs. This is
   // what lets "Find jobs" return concrete postings instead of search strategy.
-  ipcMain.handle("web:live-search", async (_event, input: { roles: string; location: string; instructions?: string }): Promise<AppData> => {
+  handleAi("web:live-search", async (_event, input: { roles: string; location: string; instructions?: string }): Promise<AppData> => {
     const data = await store.load();
     const provider = data.aiProviders.find((item) => item.key === data.settings.activeAiProvider);
     if (!provider?.detected) throw new Error("No detected AI engine is selected. Choose or detect one in Settings.");
@@ -4731,7 +4741,7 @@ If this page is NOT a single job posting (e.g. a search results list or an error
   // in-app browser (their own session — past Cloudflare/login as a human), so the
   // renderer hands us the scraped text + links and we turn them into cards. This is
   // the camouflage-free path for the hostile boards (jobs.ch, Indeed, LinkedIn).
-  ipcMain.handle("web:grab-jobs", async (_event, input: { url: string; text: string; links: Array<{ text: string; href: string }> }): Promise<AppData> => {
+  handleAi("web:grab-jobs", async (_event, input: { url: string; text: string; links: Array<{ text: string; href: string }> }): Promise<AppData> => {
     const data = await store.load();
     const provider = data.aiProviders.find((item) => item.key === data.settings.activeAiProvider);
     if (!provider?.detected) throw new Error("No detected AI engine is selected. Choose or detect one in Settings.");
@@ -4890,9 +4900,7 @@ If this page is NOT a single job posting (e.g. a search results list or an error
       child.on("error", reject);
       child.on("close", (code) => code === 0 ? resolve() : reject(new Error(stderr.trim() || `Installer exited with code ${code ?? "unknown"}.`)));
     });
-    return store.update(async (draft) => {
-      draft.aiProviders = await detectAiProviders(draft.aiProviders);
-    });
+    return store.update(redetectProviders);
   });
 
   // Launch the engine's interactive sign-in. agy's login is a TTY/browser OAuth
@@ -4951,7 +4959,7 @@ If this page is NOT a single job posting (e.g. a search results list or an error
   // Rate a CV like an ATS scanner AND a senior Swiss recruiter would: overall
   // score, category breakdown, strengths, and concrete fixes. If the CV is tied
   // to a job, the match is scored against that posting.
-  ipcMain.handle("cv:review", async (_event, input: { cvVersionId?: string }): Promise<CvReview> => {
+  handleAi("cv:review", async (_event, input: { cvVersionId?: string }): Promise<CvReview> => {
     const data = await store.load();
     const provider = activeProvider(data);
     if (!provider?.detected) throw new Error("No AI CLI is detected. Set up your AI engine in Settings, then try again.");
@@ -5212,9 +5220,7 @@ Return ONLY a JSON object:
   });
 
   ipcMain.handle("ai:detect", async () => {
-    const data = await store.update(async (draft) => {
-      draft.aiProviders = await detectAiProviders(draft.aiProviders);
-    });
+    const data = await store.update(redetectProviders);
     await addEvent("ai.detected", "ai", "providers", {
       detected: data.aiProviders.filter((provider) => provider.detected).map((provider) => provider.key),
     });
@@ -5224,7 +5230,7 @@ Return ONLY a JSON object:
   ipcMain.handle("ai:select", async (_event, providerKey: AiProvider["key"]) => {
     const data = await store.update((draft) => {
       draft.settings.activeAiProvider = providerKey;
-      draft.aiProviders = draft.aiProviders.map((provider) => ({ ...provider, selected: provider.key === providerKey }));
+      draft.aiProviders = markActive(draft.aiProviders, providerKey);
     });
     await addEvent("ai.selected", "ai", providerKey, { providerKey });
     return data;
@@ -5339,7 +5345,7 @@ Return ONLY a JSON object:
   );
 
   // ── Profile-fact capture (review-gated; never auto-applied) ──────────────────
-  ipcMain.handle("ai:extract-profile-facts", async (_event, input: { conversationId: string }) => {
+  handleAi("ai:extract-profile-facts", async (_event, input: { conversationId: string }) => {
     const current = await store.load();
     const conversation = current.aiConversations.find((item) => item.id === input.conversationId);
     if (!conversation || !conversation.messages.length) return current;

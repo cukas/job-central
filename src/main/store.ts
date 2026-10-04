@@ -217,6 +217,13 @@ export class DataStore {
       };
     });
 
+    // Gemini CLI is dropped (Google stops serving AI Pro/Ultra to it ~June 2026);
+    // anyone pointed at it — or any provider no longer seeded — moves to an
+    // installed engine, agy only when none is detected.
+    const activeAiProvider = aiProviders.some((provider) => provider.key === settings.activeAiProvider)
+      ? settings.activeAiProvider
+      : aiProviders.find((provider) => provider.detected && provider.key !== "custom")?.key ?? "agy";
+
     const masterStyle = {
       ...initial.masterCv.style,
       ...(parsed.masterCv?.style ?? {}),
@@ -314,7 +321,7 @@ export class DataStore {
       portals,
       jobPosts,
       applications,
-      aiProviders,
+      aiProviders: aiProviders.map((provider) => ({ ...provider, selected: provider.key === activeAiProvider })),
       aiPlans: parsed.aiPlans ?? initial.aiPlans,
       aiProposals: parsed.aiProposals ?? [],
       aiConversations: parsed.aiConversations ?? [],
@@ -326,12 +333,7 @@ export class DataStore {
         activeWorkspaceId: "workspace_self",
         removedJobUrls: [...new Set([...removedJobUrls, ...removedJobsByUrl.keys()])],
         removedJobs: [...removedJobsByUrl.values()].sort((a, b) => (b.removedAt || "").localeCompare(a.removedAt || "")),
-        // Gemini CLI is dropped (Google stops serving AI Pro/Ultra to it ~June
-        // 2026); anyone pointed at it — or any provider no longer seeded — moves
-        // to the Antigravity CLI (agy).
-        activeAiProvider: aiProviders.some((provider) => provider.key === settings.activeAiProvider)
-          ? settings.activeAiProvider
-          : "agy",
+        activeAiProvider,
         onboardingComplete,
       },
     };
