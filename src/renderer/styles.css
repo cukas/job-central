@@ -6407,6 +6407,29 @@ button.small { padding: 6px 12px; font-size: 0.84rem; min-height: 34px; }
 }
 .engine-alt .onboarding-providers { margin-top: 10px; }
 
+.engine-pick-status { display: flex; align-items: center; gap: 8px; min-height: 22px; font-size: 0.88rem; font-weight: 600; }
+.engine-pick-list { display: grid; gap: 8px; }
+.engine-pick-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.engine-pick-row.chosen { border-color: var(--accent-ui, #f97316); }
+.engine-pick-row.missing > label { color: var(--muted); }
+.engine-pick-row > label { display: flex; align-items: center; gap: 10px; cursor: pointer; min-width: 0; }
+.engine-pick-row.missing > label { cursor: default; }
+.engine-pick-extra { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-left: 26px; }
+.engine-pick-extra > span:first-child { color: var(--muted); font-size: 0.82rem; }
+.engine-pick-test { margin: 0; font-size: 0.82rem; overflow-wrap: anywhere; }
+.engine-pick-test.ok { color: #15803d; }
+.engine-pick-test.fail { color: #b91c1c; }
+.engine-pick-actions { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 8px; }
+
 /* Fit score ring on search-result cards */
 .ai-target-head-right {
   display: flex;
