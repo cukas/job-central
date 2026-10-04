@@ -117,6 +117,8 @@ import type {
   SearchPreferences,
   SourceDocument,
 } from "../shared/types";
+import { jobCentral } from "./api";
+import { EngineChooser } from "./EngineChooser";
 
 // Minimal surface of Electron's <webview> tag that the in-app job browser uses.
 // Typed here so we avoid pulling Electron types into the renderer bundle.
@@ -133,12 +135,6 @@ interface WebviewElement extends HTMLElement {
   loadURL(url: string): Promise<void>;
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
   getWebContentsId(): number;
-}
-
-function jobCentral(): JobCentralApi {
-  const api = (window as unknown as { jobCentral?: JobCentralApi }).jobCentral;
-  if (!api) throw new Error("Job Central API is not available. Check the Electron preload bridge.");
-  return api;
 }
 
 function isCvVersionDocument(cv: CvDocument | CvVersion): cv is CvVersion {
@@ -915,7 +911,7 @@ const onboardingCopy = {
     aboutTitle: "About you",
     aboutBody: "This appears on your CV and applications. You can refine it later in the CV studio.",
     cvTitle: "Build your CV",
-    cvBody: "Drop your CVs, work certificates and diplomas — agy reads them, builds your master CV, and you pick which projects make the cut. It works only from your documents — always review what it writes before you use it.",
+    cvBody: "Drop your CVs, work certificates and diplomas — your AI engine reads them, builds your master CV, and you pick which projects make the cut. It works only from your documents — always review what it writes before you use it.",
     cvImport: "Upload PDF / DOCX / TXT",
     cvPlaceholder: "Or paste your existing CV, LinkedIn export, or raw career history here.",
     cvDetected: "Detected sections",
@@ -954,7 +950,7 @@ const onboardingCopy = {
     aboutTitle: "Über dich",
     aboutBody: "Das erscheint auf deinem CV und in Bewerbungen. Du kannst es später im CV-Studio verfeinern.",
     cvTitle: "Dein CV aufbauen",
-    cvBody: "Wirf deine CVs, Arbeitszeugnisse und Diplome ein — agy liest sie, baut dein Master-CV und du wählst, welche Projekte reinkommen. Es arbeitet nur mit deinen Dokumenten — prüf aber immer, was es schreibt.",
+    cvBody: "Wirf deine CVs, Arbeitszeugnisse und Diplome ein — deine KI-Engine liest sie, baut dein Master-CV und du wählst, welche Projekte reinkommen. Es arbeitet nur mit deinen Dokumenten — prüf aber immer, was es schreibt.",
     cvImport: "PDF / DOCX / TXT hochladen",
     cvPlaceholder: "Oder füge hier dein bestehendes CV, einen LinkedIn-Export oder deinen Werdegang ein.",
     cvDetected: "Erkannte Abschnitte",
@@ -1002,16 +998,12 @@ function OnboardingWizard({
   const [excludeKeywords, setExcludeKeywords] = useState(data.settings.search.negativeKeywords.join(", "));
   const [targetCompanies, setTargetCompanies] = useState(data.settings.search.targetCompanies.join(", "));
   const [excludedCompanies, setExcludedCompanies] = useState(data.settings.search.excludedCompanies.join(", "));
-  const [engineTest, setEngineTest] = useState<{ ok: boolean; message: string } | null>(null);
-  const [engineBusy, setEngineBusy] = useState<null | "install" | "test">(null);
   const [zeugApplied] = useState(false);
   // True once the imported CV has been written to the master CV (so the agy material
   // chat refines real data, and finish() won't clobber those refinements).
   const [masterSeeded, setMasterSeeded] = useState(false);
 
   const t = onboardingCopy[language];
-  const agy = data.aiProviders.find((provider) => provider.key === "agy");
-  const otherEngines = data.aiProviders.filter((provider) => provider.key !== "agy" && provider.key !== "custom");
   const totalSteps = t.steps.length;
   const nameReady = Boolean(profileDraft.fullName.trim());
 
@@ -1158,92 +1150,7 @@ function OnboardingWizard({
               <h1>{t.aiTitle}</h1>
               <p>{t.aiBody}</p>
 
-              <div className="engine-setup">
-                <div className="engine-setup-head">
-                  <div>
-                    <strong>Antigravity (agy)</strong>
-                    <span>{language === "de" ? "Empfohlen — Googles KI-Engine, nutzt dein Google-Konto (AI Pro/Ultra). Kein Node oder Homebrew nötig." : "Recommended — Google's AI engine, uses your Google account (AI Pro/Ultra). No Node or Homebrew needed."}</span>
-                  </div>
-                  <span className={`engine-badge ${engineTest?.ok ? "ok" : agy?.detected ? "warn" : "missing"}`}>
-                    {engineTest?.ok ? (language === "de" ? "Bereit" : "Ready") : agy?.detected ? (language === "de" ? "Installiert" : "Installed") : (language === "de" ? "Nicht installiert" : "Not installed")}
-                  </span>
-                </div>
-
-                <ol className="engine-steps">
-                  <li className={agy?.detected ? "done" : "active"}>
-                    <div>
-                      <strong>{language === "de" ? "1. Engine installieren" : "1. Install the engine"}</strong>
-                      <span>{engineBusy === "install" ? (language === "de" ? "Engine wird heruntergeladen — das kann eine Minute dauern…" : "Downloading the engine — this can take a minute…") : agy?.detected ? (language === "de" ? `Installiert (${agy.version ?? "bereit"})` : `Installed (${agy.version ?? "ready"})`) : (language === "de" ? "Ein Klick — lädt eine eigenständige Binary herunter." : "One click — downloads a self-contained binary.")}</span>
-                    </div>
-                    {agy?.detected
-                      ? <Check size={18} className="engine-step-ok" />
-                      : engineBusy === "install"
-                        ? <span className="engine-working"><Loader2 size={16} className="spin" /> {language === "de" ? "Installiere…" : "Installing…"}</span>
-                        : <button className="primary small" onClick={() => {
-                            setEngineBusy("install");
-                            void run(language === "de" ? "KI-Engine wird installiert" : "Installing AI engine", async () => {
-                              const next = await jobCentral().installCli("agy");
-                              setData(next);
-                              return next;
-                            }).finally(() => setEngineBusy(null));
-                          }}><Download size={15} /> {language === "de" ? "Installieren" : "Install"}</button>}
-                  </li>
-                  <li className={engineTest?.ok ? "done" : agy?.detected ? "active" : ""}>
-                    <div>
-                      <strong>{language === "de" ? "2. Mit Google anmelden" : "2. Sign in with Google"}</strong>
-                      <span>{language === "de" ? "Öffnet ein Terminal mit agy — bestätige im Browser und komm dann zurück." : "Opens a Terminal running agy — approve in your browser, then come back."}</span>
-                    </div>
-                    <button className="secondary small" disabled={!agy?.detected} onClick={() => run(language === "de" ? "Anmeldung wird geöffnet" : "Opening sign-in", async () => {
-                      await jobCentral().loginCli("agy");
-                      return undefined;
-                    })}><ExternalLink size={15} /> {language === "de" ? "Anmelden" : "Sign in"}</button>
-                  </li>
-                  <li className={engineTest?.ok ? "done" : engineBusy === "test" ? "active" : ""}>
-                    <div>
-                      <strong>{language === "de" ? "3. Verbindung testen" : "3. Test the connection"}</strong>
-                      <span>{engineBusy === "test" ? (language === "de" ? "Die Engine wird um eine Antwort gebeten — ein paar Sekunden…" : "Asking the engine to answer — a few seconds…") : engineTest ? engineTest.message : (language === "de" ? "Bestätigt, dass die Engine antwortet." : "Confirms the engine answers.")}</span>
-                    </div>
-                    {engineTest?.ok
-                      ? <Check size={18} className="engine-step-ok" />
-                      : engineBusy === "test"
-                        ? <span className="engine-working"><Loader2 size={16} className="spin" /> {language === "de" ? "Teste…" : "Testing…"}</span>
-                        : <button className="secondary small" disabled={!agy?.detected} onClick={() => {
-                            setEngineBusy("test");
-                            void run(language === "de" ? "Engine wird getestet" : "Testing engine", async () => {
-                              const result = await jobCentral().testCli("agy");
-                              setEngineTest(result);
-                              return result;
-                            }, (r) => r.ok ? (language === "de" ? "Verbunden!" : "Connected!") : (language === "de" ? "Noch nicht verbunden" : "Not connected yet")).finally(() => setEngineBusy(null));
-                          }}><Sparkles size={15} /> {language === "de" ? "Testen" : "Test"}</button>}
-                  </li>
-                </ol>
-
-                <button className="primary engine-finish" disabled={!agy?.detected} onClick={() => selectEngineAndContinue("agy")}>
-                  <Check size={16} /> {engineTest?.ok ? (language === "de" ? "Antigravity nutzen & weiter" : "Use Antigravity & continue") : (language === "de" ? "Antigravity nutzen" : "Use Antigravity")}
-                </button>
-              </div>
-
-              <details className="engine-alt">
-                <summary>{language === "de" ? "Nutzt du bereits eine andere KI-CLI?" : "Already use a different AI CLI?"}</summary>
-                <button className="secondary small" onClick={() => run(t.aiDetect, async () => {
-                  const next = await jobCentral().detectAiProviders();
-                  setData(next);
-                  return next;
-                })}><RefreshCw size={15} /> {t.aiDetect}</button>
-                <div className="onboarding-providers">
-                  {otherEngines.map((provider) => (
-                    <button
-                      key={provider.key}
-                      className={`onboarding-provider${provider.detected ? "" : " disabled"}`}
-                      disabled={!provider.detected}
-                      onClick={() => selectEngineAndContinue(provider.key)}
-                    >
-                      <strong>{provider.label}</strong>
-                      <span className={provider.detected ? "ok" : "missing"}>{provider.detected ? t.aiInstalled : t.aiMissing}</span>
-                    </button>
-                  ))}
-                </div>
-              </details>
+              <EngineChooser data={data} setData={setData} run={run} isDe={language === "de"} onContinue={(key) => void selectEngineAndContinue(key)} />
 
               <button className="link-button" onClick={() => selectEngineAndContinue()}>{t.aiNone}</button>
             </div>
@@ -1300,7 +1207,7 @@ const AGY_MODELS = [
   "Gemini 3.1 Pro",
 ];
 
-function AgyModelControl({ onActivated, isDe }: { onActivated?: (data: AppData) => void; isDe: boolean }) {
+function AgyModelControl({ isDe }: { isDe: boolean }) {
   const [model, setModel] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
@@ -1325,12 +1232,7 @@ function AgyModelControl({ onActivated, isDe }: { onActivated?: (data: AppData) 
       setModel(saved);
       setDraft(saved ?? "");
       setEditing(false);
-      // Picking an agy model means the user wants agy — make it the active engine
-      // so runs actually use it (the model picker and the active provider can never
-      // silently disagree, which is what made it look like the choice "didn't stick").
-      const next = await jobCentral().selectAiProvider("agy");
-      onActivated?.(next);
-      setNote(isDe ? "Gespeichert — agy ist jetzt deine aktive Engine." : "Saved — agy is now your active engine.");
+      setNote(isDe ? "agy-Modell gespeichert." : "agy model saved.");
       window.setTimeout(() => setNote(null), 2600);
     } catch (error) {
       setNote(error instanceof Error ? error.message : (isDe ? "Modell konnte nicht gespeichert werden." : "Could not save the model."));
@@ -1417,19 +1319,21 @@ function FitRing({ value, onExplain, isDe }: { value: number; onExplain?: () => 
 function AgyMaterialChat({
   setData,
   isDe,
+  engineName,
   prepare,
 }: {
   setData: (data: AppData) => void;
   isDe: boolean;
+  engineName: string;
   prepare?: () => Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<Array<{ role: "you" | "agy"; text: string }>>([]);
+  const [log, setLog] = useState<Array<{ role: "you" | "ai"; text: string }>>([]);
   const logRef = useRef<HTMLDivElement>(null);
   // Keep the newest message in view, and cap history so a heavy session can't grow
   // the log unbounded.
-  const appendLog = (entry: { role: "you" | "agy"; text: string }) =>
+  const appendLog = (entry: { role: "you" | "ai"; text: string }) =>
     setLog((prev) => [...prev, entry].slice(-50));
   useEffect(() => {
     const el = logRef.current;
@@ -1446,9 +1350,9 @@ function AgyMaterialChat({
       if (prepare) await prepare();
       const res = await jobCentral().ingestCvMaterial({ text: material });
       setData(res.data);
-      appendLog({ role: "agy", text: res.summary || (isDe ? "CV aktualisiert." : "Updated your CV.") });
+      appendLog({ role: "ai", text: res.summary || (isDe ? "CV aktualisiert." : "Updated your CV.") });
     } catch (error) {
-      appendLog({ role: "agy", text: error instanceof Error ? error.message : "Error" });
+      appendLog({ role: "ai", text: error instanceof Error ? error.message : "Error" });
     } finally {
       setBusy(false);
     }
@@ -1456,21 +1360,21 @@ function AgyMaterialChat({
 
   return (
     <div className="agy-material">
-      <strong>{isDe ? "Material einwerfen — agy nutzt es für dein CV" : "Drop in material — agy uses it for your CV"}</strong>
+      <strong>{isDe ? `Material einwerfen — ${engineName} nutzt es für dein CV` : `Drop in material — ${engineName} uses it for your CV`}</strong>
       <span className="panel-help">
         {isDe
-          ? "Füge alte CVs, LinkedIn-Text oder Notizen ein. agy übernimmt Fakten daraus in dein Master-CV — prüf das Ergebnis."
-          : "Paste old CVs, LinkedIn text or notes — agy merges the facts into your master CV; review the result."}
+          ? `Füge alte CVs, LinkedIn-Text oder Notizen ein. ${engineName} übernimmt Fakten daraus in dein Master-CV — prüf das Ergebnis.`
+          : `Paste old CVs, LinkedIn text or notes — ${engineName} merges the facts into your master CV; review the result.`}
       </span>
       {log.length || busy ? (
         <div className="agy-material-log" ref={logRef}>
           {log.map((message, index) => (
             <div key={index} className={message.role}>
-              <strong>{message.role === "you" ? (isDe ? "Du" : "You") : "agy"}</strong>
+              <strong>{message.role === "you" ? (isDe ? "Du" : "You") : engineName}</strong>
               <p>{message.text}</p>
             </div>
           ))}
-          {busy ? <div className="agy"><strong>agy</strong><p className="agy-typing"><Loader2 size={13} className="spin" /> …</p></div> : null}
+          {busy ? <div className="agy"><strong>{engineName}</strong><p className="agy-typing"><Loader2 size={13} className="spin" /> …</p></div> : null}
         </div>
       ) : null}
       <textarea
@@ -1519,6 +1423,7 @@ function CvWorkbench({
   // Default doc language = the user's primary language; opt-in to also build the other.
   const [cvLang, setCvLang] = useState<"en" | "de">(data.settings.language);
   const otherLang: "en" | "de" = cvLang === "de" ? "en" : "de";
+  const engineName = data.aiProviders.find((provider) => provider.key === data.settings.activeAiProvider)?.label ?? "AI";
   const otherLangName = isDe
     ? (otherLang === "de" ? "Deutsch" : "Englisch")
     : (otherLang === "de" ? "German" : "English");
@@ -1644,7 +1549,7 @@ function CvWorkbench({
       <section className="cvw-zone">
         <div className="cvw-zone-head">
           <strong>{isDe ? "1 · Unterlagen einwerfen" : "1 · Drop your documents"}</strong>
-          <span>{isDe ? "CVs, Arbeitszeugnisse, Diplome. agy baut dein Master-CV daraus — prüf das Ergebnis." : "CVs, Arbeitszeugnisse, diplomas. agy builds your master CV from them — review what it writes."}</span>
+          <span>{isDe ? `CVs, Arbeitszeugnisse, Diplome. ${engineName} baut dein Master-CV daraus — prüf das Ergebnis.` : `CVs, Arbeitszeugnisse, diplomas. ${engineName} builds your master CV from them — review what it writes.`}</span>
         </div>
         <div
           className={`cvw-dropzone${dragging ? " dragging" : ""}`}
@@ -1718,7 +1623,7 @@ function CvWorkbench({
             <div className="cvw-loading-bar" />
             <span>
               {busy === "build"
-                ? (isDe ? "agy baut dein CV aus deinen Unterlagen…" : "agy is building your CV from your documents…")
+                ? (isDe ? `${engineName} baut dein CV aus deinen Unterlagen…` : `${engineName} is building your CV from your documents…`)
                 : (isDe ? "Lese Dokumente… eingescannte PDFs (Scans) werden per OCR gelesen und dauern ~1 Min." : "Reading documents… scanned PDFs are OCR'd and take ~1 min.")}
             </span>
           </div>
@@ -1728,14 +1633,14 @@ function CvWorkbench({
 
       {builtCv.length || projects.length ? (
         <section className="cvw-zone">
-          <AgyMaterialChat setData={setData} isDe={isDe} prepare={async () => markSeeded()} />
+          <AgyMaterialChat setData={setData} isDe={isDe} engineName={engineName} prepare={async () => markSeeded()} />
         </section>
       ) : null}
 
       {data.profile.fullName.trim() || data.profile.email.trim() || projects.length ? (
         <section className="cvw-zone">
           <div className="cvw-zone-head">
-            <strong>{isDe ? "2 · Das hat agy gefunden" : "2 · What agy found"}</strong>
+            <strong>{isDe ? `2 · Das hat ${engineName} gefunden` : `2 · What ${engineName} found`}</strong>
             <span>{isDe ? "Aus deinen Unterlagen entnommen — nichts erfunden. Feineinstellung später im CV-Studio." : "Pulled from your documents — nothing invented. Fine-tune later in the CV studio."}</span>
           </div>
           <ul className="cvw-findings">
@@ -1767,7 +1672,7 @@ function CvWorkbench({
         <section className="cvw-zone">
           <div className="cvw-zone-head">
             <strong>{isDe ? "4 · Projekte für dieses CV wählen" : "4 · Pick projects for this CV"}</strong>
-            <span>{isDe ? "Schalte ein/aus, was rein soll. Viele Projekte? Zielrolle eingeben und agy vorauswählen lassen." : "Toggle what belongs in this CV. Many projects? Set a target role and let agy pre-select."}</span>
+            <span>{isDe ? `Schalte ein/aus, was rein soll. Viele Projekte? Zielrolle eingeben und ${engineName} vorauswählen lassen.` : `Toggle what belongs in this CV. Many projects? Set a target role and let ${engineName} pre-select.`}</span>
           </div>
           <div className="cvw-tailor">
             <input value={role} onChange={(event) => setRole(event.target.value)} placeholder={isDe ? "Zielrolle (z. B. Senior Backend Engineer)" : "Target role (e.g. Senior Backend Engineer)"} />
@@ -8064,7 +7969,7 @@ function SettingsView({
                   ))}
                 </select>
               ) : provider.key === "agy" ? (
-                <AgyModelControl onActivated={setData} isDe={isDe} />
+                <AgyModelControl isDe={isDe} />
               ) : (
                 <span className="provider-default-model">{isDe ? "Account-Standard" : "Account default"}</span>
               )}

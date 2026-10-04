@@ -26,6 +26,8 @@ export async function resolveCliEnv(): Promise<NodeJS.ProcessEnv> {
     "/usr/sbin",
     "/sbin",
     `${home}/.local/bin`,
+    `${home}/.claude/local`,
+    `${home}/.codex/bin`,
     `${home}/.opencode/bin`,
     `${home}/.bun/bin`,
     `${home}/.cargo/bin`,
